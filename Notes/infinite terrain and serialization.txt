@@ -1,0 +1,16 @@
+So, basically always use world coordinates. Chunk-local coordinates are only for the mesher and whatnot.
+
+With world coords, infinite terrain should be pretty easy. Just constantly check for when the player crosses a chunk boundary. When crossing a chunk boundary, you need to generate the next chunk at worldPos + 1 % maxChunksLoaded.
+Basically, each rank of the current 3d chunk array is treated as a circular array.
+So if you cross a chunk boundary on the X axis, you load next chunk at chunks[(worldPos.X + ChunkSize.X) % maxChunksLoaded]
+And the same goes for Y and Z.
+I don't know if this will be different when we switch the chunks / voxels over to single dimensional arrays, but I don't think so?
+And for getting chunk coordinate from worldPos you just take (worldPos / ChunkSize) % maxChunksLoaded.
+
+
+
+
+As for saving the voxel data, regions of chunks should be saved per file. So like 16x8x16 chunks in a single file. Then, each chunk has a fixed size (dunno, like 524,288 bytes per chunk column). I don't know. Maybe 32,768 per chunk.
+So 2048 chunks per region, means each file will be 67108864 bytes (67 MB). That really isn't terrible, and allows for 8 bytes per voxel.
+
+Yeah that isn't bad at all. With RLE and gzip that should be down to ~10 MB on average. File I/O should be fast enough with that, right? And the benefit here is that *all* voxel data is saved, so we don't have to run any processing on loaded chunks before meshing them. Lighting data, fluid data, everything is already there.

@@ -1,0 +1,57 @@
+if the block being replaced is a light source, subtract light value from every surrounding block (round up to 0) unless that block's light value is >0 after the subtraction (means that block is lit by another light source)
+	* start with blockPos-LightValue and go to blockPos+LightValue (effectively min->max for that light source)
+	* effectively iterates an entire chunk, but only once
+	* light source counts as any block with a light value > 0. so use this logic for any air block, any torch block, any glowstone block, any transparent block.
+	* only do this if the new block is a non-light source
+	* so this is only light source -> non-light source transition
+	
+	
+wait, no, that's wrong.
+if minX has a lightValue of 13 and removedLightValue is 15 then minX will be set to 0 even though it's DEFINITELY lit by another block
+we need to get the distance between minX and removedBlock and use that for subtraction instead of removedLightValue
+but calculating the distance for each block will be super expensive, wouldn't it be better to just traverse by neighbors like with propagation?
+for each neighbor with a light value less than removedLightValue-iter then set lightValue to 0
+when you reach a neighbor with a greater light value then add to TempLightSources list and call PropagateLightFrom on each
+would this even be faster than re-propagating each source? yeah, because you'd have to iterate the entire chunk(s) to set lightValue to 0 before re-propagating. this way you set unlit blocks to 0 and then re-light them while traveling the least distance.
+i think the only other efficient option is keeping light data in a separate contiguous block of memory (so you can clear all at once) and then re-propagating each source. this would only be more efficient if we can cheat sunlight separately.
+
+
+
+	
+
+============== FINAL ==============
+light -> non-light transition
+	subtract oldBlock.LightValue from every surrounding block (rounding result up to 0) unless that block's light value is >0 after the result
+	start from oldBlockPos-LightValue and go to oldBlockPos+LightValue in each dimension
+non-light -> non-light transition
+	DO NOTHING
+non-light -> light and light -> light transition
+	find the block with the highest light value (6 neighbors + new block's self)
+	propagate from that block
+		for every neighbor set light value to lightVal - 1 unless that neighbor is a non-light block (solid) and queue up that neighbor's neighbors until lightVal - 1 <= 0
+===================================
+	
+	
+UNRELATED:
+for the damage overlay bug in shader we have to offset vertex positions by 0.5 before sending them to shader
+this makes it so the world coordinates are actually the center of each cube rather than the lower left back corner like it is now.
+so when getting the worldPos in the vertex shader, rounding the position should yield even results across the faces eliminating the bug.
+this may mess with the physics a bit, especially the collider visualization.
+
+yeah, raycasting is now broken.
+the problem is that when vertices were just 0 and 1 then the coordinate 100.7 would still belong to the voxel at 100.
+now that vertices are -0.5 and 0.5 the coordinate 100.7 belongs to the voxel at 101.
+so as the ray is stepped along it needs to round up if fractional portion is > 0.5 and round down if <= 0.5
+this feels inefficient, making those comparisons and rounding every step...
+is there a shortcut we can take?
+well, the while loop doesn't contain any calls - it's simple arithmetic at that point.
+so any changes we make would have to be to the initialization step.
+i think if we add 0.5 to our origin (so the ray starts from the center of its voxel) and then recalculate the direction vector from that new origin... it'd work. i don't know how to recalculate the direction vector though. unless i calculate the end position before changing the origin. oh. whatever you add to the origin you subtract from the direction.
+
+wait is that the problem? maybe it is stepping through everything correctly, it's just that when it reaches 100.7 it assumes it's voxel 100 and not 101. maybe all i need to do is... no, step values are whole numbers so it doesn't assume anything. i think i still need to adjust the origin and direction to be at the center of the starting voxel. and/or maybe just step 0.5 at a time? i don't know...
+you want to step through a whole voxel at a time. so just adjust origin & direction then modify TerrainManager.GetBlockAtWorldPos to floor the arguments.
+
+how does it work when the vertices are 0 and 1??? the player origin is still floored to get the voxel coordinate, but the direction isn't adjusted. so the direction should be completely off since the origin changed, but it somehow isn't??
+
+
+yeah so the solution was to ceil the origin if above 0.5 and floor if below. then modify intbound to take the fractional part of the origin away from its nearest boundary (so if 0.3 it'd end up being 0.2 (0.5 - 0.3 = 0.2)) then dividing by abs(direction).

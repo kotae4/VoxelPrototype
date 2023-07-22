@@ -1,0 +1,5 @@
+I'm leaving off half-finished:
+
+1. I need to add the fluid meshing logic (particularly the depth).
+
+2. I need to fix the occlusion issues with transparent blocks AND fluid blocks (slightly separate issues!)

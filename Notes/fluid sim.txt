@@ -1,0 +1,208 @@
+fluid propagation...
+
+for aesthetic purposes, first step should be to look 5 blocks in each direction. if an air block is found spread only that direction. this creates a smooth-looking waterfall.
+otherwise use the normal operation:
+1. if block below is air spread and set depth to 1 (yes hardcode 1, this allows it to fall infinitely).
+	1-1. if block is source block, continue to 2; else end.
+2. else if block below is solid or block is source, spread to each neighbor. neighbor gets our depth+1. when depth reaches maximum stop spreading.
+
+for each step, add the next block(s) to a collection of blocks to process for the next sim step.
+so if the source block can flow down, add the down neighbor and each of the source block's four neighbors (unless solid). remove the source block.
+next sim step: for each block in collection, add possible neighbors and remove self.
+this allows each fluid block to spread 1 block in each direction per sim step.
+
+
+whenever a block within moore's neighborhood of a fluid block is added or destroyed...
+we need to define logic for what to do when a fluid's source block is removed (source being any fluid block within moore's neighborhood with a depth less than its own depth)... and when to do it and when to check for it
+
+alright, the only time the fluid sim will change is when the chunk changes. specifically, when a block within a fluid block's neighborhood changes. so whenever we're placing / removing / modifying a block, we check above and our 4 neighbors and if any of those blocks are fluid then we add them to a collection on the FluidProcessor (all 5 blocks could be fluid and all 5 added to the collection just from modifying 1 block). the FluidProcessor then checks this collection each sim step and performs its rules on each block. the rules are local: they are only applied to each block's neighbors. this same collection can be used for the initial propagation of fluid too, it's literally the same exact ruleset. in fact, when placing a source block it's added to this collection in the same way as modifying the chunk normally would. it's all the same. so just define the rules on the FluidProcessor and ensure the TerrainManager adds the relevant blocks for processing when it needs to.
+
+okay, waterfalls are tricky...
+if the source block can't flow to make a waterfall, but any of its neighbors CAN then it'll only flow to those neighbors. it's very strange.
+this seems to apply to every block, not just the source block. that is, each block checks if any of its neighbors can be waterfalls then only flows to those neighbors. a block is determined to be a waterfall block if any block within 5 and y-1 is air.
+
+okay.. uhh, waterfalls are weird. if you place the source diagonally away by 2 blocks it'll still form a waterfall. flowing ONLY in the 2 directions to the diagonal. none of the source's neighbors are directly capable of forming waterfalls (but the neighbor's neighbor's can)
+illustration: (b is just solid block, f is flow, s is source block, and a is where the waterfall drops)
+|bbbbb|
+|bffsb|
+|bfffb|
+|baffb|
+|bbbbb|
+
+the only way i can see this working is if you iterate out 5 from each block and check for waterfalls, with each iterated block doing the same until the maxDist is reached (5). it'd have to keep track of each path (each visited block).
+no no, it's easier than that.
+simply check a 5x5 area around the source block and if any block is air (at y-1) then fill the blocks in between. the source acts as waypoint 1 and the air waypoint 2, then fill between waypoints. fill is done according to sim step, but separate from the normal collection (so the ruleset for propagation isn't applied to these waterfall blocks).
+
+now i just need to determine if the above logic is done ONLY when placing (or processing) the source block or when processing any fluid block.
+
+
+PerformSimStep():
+
+
+
+
+
+
+Revisit after several million decades:
+The normal operation should work just fine, except instead of hardcoding depth to 1 when moving vertically, it should just be curBlock.Depth, unless curBlock.Depth is SOURCE_DEPTH, then it should be (SOURCE_DEPTH - 1). This'll allow it to resume flowing normally if it ever hits anything below.
+
+Waterfalls don't have to be included right away.
+
+Removing the source block is tricky. Think about it more.
+
+
+
+Alright, re-revisit:
+====== FLUID MODEL =====
+We've got propagation of fluid down. Now we need to figure out removing the source block. But to do that we first need to model the fluid.
+And by that I mean the fluid data stored for each block.
+Depth, obviously, is stored as value 1 to SOURCE_DEPTH (0 would mean it's an air block, so shouldn't exist).
+Flow is the other value we need to complete our model... Let's disregard force. Meaning, it doesn't matter if one flow source has depth of 7 and another has depth of 2. They should be treated the same when calculating flow direction.
+So, then, flow direction can be calculated for any fluid block by looking at its 5 neighbors (4 around, 1 above) and...
+So if there's a fluid block to the N and another to the E then flow is SW
+enum EFlowDirection
+{
+	North = 1,
+	East = 2,
+	NorthEast = 3,
+	South = 4,
+	NONE_Z = 5,
+	SouthEast = 6,
+	West = 8,
+	NorthWest = 9,
+	NONE_X = 10,
+	SouthWest = 12,
+	ALL = 15
+}
+We go through the neighbors and OR the opposite direction (so when we're checking the east neighbor we OR in EFlowDirection.West).
+At the end, we then check if EFlowDirection & NONE_Z == 0 and subtract NONE_Z if true, same with NONE_X. This'll cancel out flows that go NORTH and SOUTH.
+Oh, first we should check if EFlowDirection == ALL annnd... that would mean the block is surrounded by fluid, so...? This is the only case where we'd look at each neighbor's depth value and pick the largest one. Whichever neighbor has the largest depth value is the opposite direction that we flow.
+
+So now we have depth and flow for each fluid block.
+====== END FLUID MODEL =====
+
+====== REMOVING SOURCE BLOCKS =====
+When we remove a source block, we follow the light source removal logic except that when we encounter a block with a greater depth value we recalculate its flow direction before moving on. (and when there's a block with less depth then we set it to an Air block and remove it from the FluidProcessor). Oh, each iteration is done once every fluid tick. Same with propagation. That'll be really hard to do, wow. What if the user removes multiple sources before the removal logic completes? We'd need separate queues for each removal. And separate timers for each queue tick... What.
+Maybe just have a little helper class, FluidSource_Tick that holds the Source block, the timer, and the List<T> of neighbors. Could use this for both placement and removal.
+FluidProcessor could have List<FluidSource_Tick> PropagatingSources and List<FluidSource_Tick> RemovingSources.
+And the FluidProcessor doesn't need any more data members. It doesn't need a collection of every source block and it doesn't need a collection of every fluid block because the fluid logic is applied locally (to its 4 neighbors) except when dealing with the source (adding/removing), which is what the FluidSource_Tick addresses.
+===== END REMOVING SOURCE BLOCKS =====
+
+===== FLUID BLOCK UPDATES =====
+Ah, but there are things the player can do to effect the fluids besides adding / removing source blocks.
+Adding a block in the middle of a flow alters the flow (and removes one of the flowing fluid blocks).
+Removing a block from underneath a flow alters the flow.
+
+So when placing a block on a flowing fluid block (depth < SOURCE_DEPTH):
+	* The fluid should de-propagate
+	* The fluid should re-propagate
+	* Both can't occur at the same time.
+Sooo... Is there any reason the logic for removing source blocks doesn't work here? I think it'd be the same. Add the 4 neighboring blocks. 1 of them is guaranteed to have a lower depth value if any change is supposed to occur. The remaining 3 just have their flow direction recalculated. And the 1 continues the loop, looking at its neighbors and so on. Replacing fluid blocks with Air when their depth value is less, and recalculating flow when not. Removal of any fluid block can never result in the creation of additional fluid blocks.
+So the same logic when removing a source block can be applied.
+
+The opposite applies for removing a solid block relevant to a flow. Fluid blocks will never be deleted. The same logic when propagating from a source block can be applied. So when removing *any* block we need to check if any of its neighbors are fluids and initiate the propagation logic from each neighboring fluid block.
+
+
+So FluidSource_Tick class is actually used for all fluid blocks, not just the source blocks. The Source field of the FluidSource_Tick class should be renamed to Origin.
+===== END FLUID BLOCK UPDATES =====
+
+===== TICK CONCURRENCY =====
+Now we need to tackle concurrency...
+Since there can be multiple propagations / removals occuring at different ticks, one task may set the depth of a block to 5 while another sets it to 0. Which is correct? Well, the operation that occurred last should be correct. For example, if you add a source block at tick#5 (operation#1) and remove a different source block at tick#15 (operation#2) and they both eventually operate on the same block, then the operation that began on tick#15 should have the final result. But what if operation#2 reaches the block at tick#20 and operation#1 doesn't reach it until tick#25? Operation#1 would then have the final result, incorrectly.
+
+One way to solve this is to tick all operations at the same rate, all at once. So we'd no longer use FluidSource_Tick's timer. One single timer for all operations. Then we just have to tick the operations in the order that they began, passing the "temporary" block states to the next operation. Once all operations are ticked, we set the real block states to the temporary block states.
+===== END CONCURRENCY =====
+
+
+===== FLUID BLOCK DATA =====
+Ah, that's the other thing.
+Fluid blocks have different block data.
+It'd be a huge waste of memory to store Depth and Flow data on ALL blocks, so instead we have the FluidProcessor store this data for just the Fluid blocks
+And if we need to access this data, we just check that the Block is a fluid, then we pass the coordinates to FluidProcessor.GetFluidBlockData(IntVec3 worldCoords).
+So how do we create and remove this data...
+Whenever we change a block to Fluid we add it to the list. Whenever we change a Fluid block to Air (or anything else) we remove it from the list. Easy.
+List? Is List the right container to use? And what about the type? Is the block data a struct or class?
+
+Well, if it's a struct and we use an array[,] then we're not gaining anything by separating it from the core Block data (because that's a lot of blocks that aren't fluid blocks that'll be zero'd out and padded according to the FluidBlockData struct).
+
+My gut is telling me a Dictionary<IntVec3, FluidBlockData> would be best, where FluidBlockData is a class. If we load 16 chunks and each chunk is 16x255x16 how many of those are going to have FluidBlockData associated with them? And how often would we need to access their FluidBlockData? Only when a fluid block update occurs.
+The Mesh is separate from everything else (each fluid type gets its own mesh per chunk). And we don't have to rebuild the mesh unless the actual fluid changes. It's transparent so it doesn't need to be updated when surrounding blocks are modified or when lighting changes (does this apply to glass too? dunno).
+
+Well, if an ocean biome is generated (and every loaded chunk is an ocean biome) then almost every single block will be a fluid block, so that'll be FAR too much memory used by the Dict (or List). In that case adding the fluid data to the base Block struct would be optimal. But only in that case.
+We really only have 1 byte of fluid data, so it's not *insane* to put it all on the Block struct.
+4 bits for Depth (1-8)
+4 bits for Flow (1-15)
+
+That adds 65 KB to each chunk though... or 1 MB to the game (assuming 16 chunks are loaded at most).
+I mean that's not terrible, I guess. And it does speed up regeneration of fluid meshes since the mesher can access all the data it needs directly, without having to call into the FluidProcessor.
+
+Plus that one byte can be used for other blocks that'll inevitably need some separate data. Like door / button state.
+Yeah, just add an extra byte AdditionalData to the Block struct. Document how each block type uses it.
+===== END FLUID BLOCK DATA =====
+
+
+
+Real quick: Why do we need to store fluid block data anyway? Because other mechanics rely on flow state (if block A flows into block B then block B becomes block C), and propagation / depropagation needs to look at Depth of all neighbors (which can be unknown at the time).
+
+
+
+===== MESHING FLUIDS =====
+How do we mesh something that can and WILL change every tick? 
+I think there should be a tiny container "FluidMeshUpdater" class that holds changes to the mesh for that tick. At the end of the tick the changes are applied to the mesh.
+It basically just holds a List<T> of new vertices, indices, anddddd uvs. Do fluids need UVs? Yeah, yeah. There's different fluid textures, and we could also embed flow data into uvs.
+
+Ah, but the tick may operate on many different chunks, so we need a way of differentiating the data by chunk. Maybe just keep a Dictionary<Chunk, FluidMeshUpdater> on the FluidProcessor? The FluidProcessor will have access to the chunks during the ticks anyway.
+
+It's very important that the meshes remain bound to chunks, though. Very important. It may seem easier to just have one big fluid mesh, or one mesh per fluid source, but it isn't.
+
+Wait, this is bad. What if a stone block is added to the middle of a flow? It'd remove the fluid block and alter the surrounding fluid blocks. How would those changes be reflected on the fluid mesh? Without keeping track of each block's indices in the mesh, it'd be impossible. Instead, we'd need to set a flag on the big mesher like "NeedsFluidMeshUpdate", and the big mesher then checks that flag in its Update() and iterates all of its blocks to rebuild the mesh from scratch. Of course, separate flags for transparency and solid meshes, but all the logic can be combined in the one single iteration of its blocks. So you aren't iterating the blocks multiple times per frame.
+
+Buuuut, as an optimization, maybe keeping track of the block's indices would be good? I think we still have a spare byte of data on the voxel struct. Although 255 is probably too small to store indices. Yeah, even if we just store the starting index we wouldn't have enough room. We'd need 16*128*16 (32,768). I feel like there's definitely an optimization that can be made here...
+
+
+Oh well. The logic now is that the FluidProcessor sets a boolean on the MeshGenerator "NeedsFluidMeshUpdate". The MeshGenerator then checks this flag when it next iterates its blocks.
+Or store the boolean on the Chunk and the Chunk then calls into the MeshGenerator on its Update. Whichever works.
+
+===== END MESHING FLUIDS =====
+
+
+
+
+Another revisit after a billion years:
+
+Removing a fluid block (source or not) basically goes like this:
+1. If the block isn't fluid then skip it (exit early)
+2. Set the block ID to Air
+3. Add the 5 neighbors to process on the next tick, using the following logic.
+Look at 5 neighbors:
+	If depth is less than origin, turn to Air
+	If depth is greater (or equal to?) than origin, recalculate flow direction
+		* Should be able to & out the direction to origin, don't need to look at the neighbor's neighbors.
+	
+Then we add the 5 neighbors of each neighbor to process on the next tick, following the same logic.
+
+Now, Adding a fluid block (source or not) goes like this:
+If the block isn't air or fluid then skip it
+If the block is already deeper then skip it (maybe recalculate flow first? dunno)
+If not skipped:
+	* Bitwise OR in the new depth value and flow direction
+	* Set the block ID to whatever fluid ID
+	
+Then we add the 5 neighbors to process on the next tick, following the same logic.
+
+
+
+Wait, hold on, regarding removing a fluid block...
+If the depth is greater then we don't need to look at its neighbors, right?
+Because fluids flow in one direction. If it's upstream from the origin then it can't be effected by the origin's removal. (origin as in the origin of the operation, not necessarily the source block)
+Which means its neighbors also can't be effected. So we can literally just skip all logic for it completely if it's greater depth.
+
+But that only applies when comparing the block's depth to the origin's depth, right?
+When we set a neighbor of the origin to air and add that neighbor's neighbors for the next tick,
+then when we process the neighbor's of the neighbor we should be comparing its depth to the neighbor's depth, not the origin's depth.
+And if THAT comparison comes up with it being greater than (or equal to?) then we should recalculate its flow (and add its neighbors??)
+
+i don't know. let's just get basic propagation and meshing done before worrying about flow aesthetics.
+
+
+Yeah, this is a lot more work than I thought. Meshing fluids. Should we skip occluded faces? Do fluids occlude neighboring faces? How does lighting work with fluids?
